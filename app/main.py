@@ -12,7 +12,8 @@ import os
 
 from app.config import config
 from loguru import logger
-from app.api import chat, health, file, aiops
+from app.api import chat, health, file, aiops, agent_runs
+from app.services.agent_run_service import agent_run_service
 from app.core.milvus_client import milvus_manager
 
 
@@ -34,6 +35,8 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     
     yield
+
+    await agent_run_service.shutdown()
     
     # 关闭时执行
     logger.info("🔌 正在关闭 Milvus 连接...")
@@ -63,6 +66,7 @@ app.include_router(health.router, tags=["健康检查"])
 app.include_router(chat.router, prefix="/api", tags=["对话"])
 app.include_router(file.router, prefix="/api", tags=["文件管理"])
 app.include_router(aiops.router, prefix="/api", tags=["AIOps智能运维"])
+app.include_router(agent_runs.router, prefix="/api", tags=["Agent任务控制"])
 
 # 挂载静态文件
 static_dir = "static"

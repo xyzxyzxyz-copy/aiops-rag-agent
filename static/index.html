@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>智能OnCall助手</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20261027-agent-controls-2">
     <!-- Markdown 渲染库 -->
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <!-- 代码高亮库（可选） -->
@@ -103,7 +103,8 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <button class="send-btn-circle" id="sendButton" title="发送">
+                                    <span id="agentRunStatus" class="agent-run-status" role="status" aria-live="polite"></span>
+                                    <button class="send-btn-circle" id="sendButton" type="button" title="发送" aria-label="发送">
                                         <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                         </svg>
@@ -127,6 +128,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20261027-agent-controls-2"></script>
 </body>
 </html>

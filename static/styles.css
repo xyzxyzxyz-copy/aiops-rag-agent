@@ -837,6 +837,11 @@ body {
     font-weight: 600;
 }
 
+.agent-run-status {
+    font-size: 12px;
+    color: #64748b;
+}
+
 .send-btn-circle {
     width: 36px;
     height: 36px;

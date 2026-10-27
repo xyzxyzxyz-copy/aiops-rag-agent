@@ -24,7 +24,7 @@ from app.tools import get_current_time, retrieve_knowledge
 from app.agent.mcp_client import get_mcp_client_with_retry
 
 # 阿里千问大模型和langchain集成参考： https://docs.langchain.com/oss/python/integrations/chat/qwen
-# 注意：需要配置环境变量 DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1 否则默认访问的是新加坡站点
+# 注意：需要配置环境变量 DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 # 同时也需要配置环境变量 DASHSCOPE_API_KEY=your_api_key
 
 
@@ -236,6 +236,8 @@ class RagAgentService:
         self,
         question: str,
         session_id: str,
+        resume: bool = False,
+        turn_id: str | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         流式处理用户问题（逐步返回答案片段）
@@ -261,6 +263,8 @@ class RagAgentService:
             ]
 
             # 构建 Agent 输入
+            if turn_id:
+                messages[-1].id = turn_id
             agent_input = {"messages": messages}
 
             # 配置 thread_id（用于会话持久化）
@@ -269,6 +273,21 @@ class RagAgentService:
                     "thread_id": session_id
                 }
             }
+
+            if resume:
+                checkpoint = await self.agent.aget_state(config_dict)
+                saved_messages = checkpoint.values.get("messages", []) if checkpoint else []
+                if checkpoint and checkpoint.values and (
+                    not turn_id or any(m.id == turn_id for m in saved_messages)
+                ):
+                    # No next node means the graph finished just before stop arrived.
+                    if not checkpoint.next:
+                        saved = checkpoint.values.get("messages", [])
+                        answer = saved[-1].content if saved else ""
+                        yield {"type": "content", "data": answer}
+                        yield {"type": "complete"}
+                        return
+                    agent_input = None
 
             async for token, metadata in self.agent.astream(
                 input=agent_input,

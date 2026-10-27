@@ -81,7 +81,8 @@ class AIOpsService:
     async def execute(
         self,
         user_input: str,
-        session_id: str = "default"
+        session_id: str = "default",
+        resume: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         执行 Plan-Execute-Replan 流程
@@ -111,8 +112,14 @@ class AIOpsService:
                 }
             }
 
+            graph_input = initial_state
+            if resume:
+                checkpoint = await self.graph.aget_state(config_dict)
+                if checkpoint and checkpoint.values:
+                    graph_input = None
+
             async for event in self.graph.astream(
-                input=initial_state,
+                input=graph_input,
                 config=config_dict,
                 stream_mode="updates"
             ):
@@ -158,7 +165,8 @@ class AIOpsService:
 
     async def diagnose(
         self,
-        session_id: str = "default"
+        session_id: str = "default",
+        resume: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         AIOps 诊断接口（兼容旧接口）
@@ -245,7 +253,7 @@ class AIOpsService:
                 - 所有内容必须基于工具查询的真实数据，严禁编造
                 - 如果某个步骤失败，在结论中如实说明，不要跳过""")
 
-        async for event in self.execute(aiops_task, session_id):
+        async for event in self.execute(aiops_task, session_id, resume=resume):
             # 转换事件格式以兼容旧的 API
             if event.get("type") == "complete":
                 # 将 response 包装为 diagnosis 格式

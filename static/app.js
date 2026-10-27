@@ -5,6 +5,9 @@ class SuperBizAgentApp {
         this.currentMode = 'quick'; // 'quick' 或 'stream'
         this.sessionId = this.generateSessionId();
         this.isStreaming = false;
+        this.activeRun = null;
+        this.sessionRuns = new Map();
+        this.runControlBusy = false;
         this.currentChatHistory = []; // 当前对话的消息历史
         this.chatHistories = this.loadChatHistories(); // 所有历史对话
         this.isCurrentChatFromHistory = false; // 标记当前对话是否是从历史记录加载的
@@ -102,6 +105,7 @@ class SuperBizAgentApp {
         // 输入区域元素
         this.messageInput = document.getElementById('messageInput');
         this.sendButton = document.getElementById('sendButton');
+        this.agentRunStatus = document.getElementById('agentRunStatus');
         this.toolsBtn = document.getElementById('toolsBtn');
         this.toolsMenu = document.getElementById('toolsMenu');
         this.uploadFileItem = document.getElementById('uploadFileItem');
@@ -161,7 +165,7 @@ class SuperBizAgentApp {
         
         // 发送消息
         if (this.sendButton) {
-            this.sendButton.addEventListener('click', () => this.sendMessage());
+            this.sendButton.addEventListener('click', () => this.handleSendButton());
         }
         
         if (this.messageInput) {
@@ -246,6 +250,7 @@ class SuperBizAgentApp {
         
         // 停止所有进行中的操作
         this.isStreaming = false;
+        this.activeRun = null;
         
         // 清空输入框
         if (this.messageInput) {
@@ -421,6 +426,10 @@ class SuperBizAgentApp {
     
     // 加载历史对话
     async loadChatHistory(historyId) {
+        if (this.isStreaming) {
+            this.showNotification('请先停止当前任务再切换对话', 'warning');
+            return;
+        }
         const history = this.chatHistories.find(h => h.id === historyId);
         if (!history) {
             return;
@@ -498,6 +507,23 @@ class SuperBizAgentApp {
         }
         
         // 更新UI
+        this.activeRun = this.sessionRuns.get(this.sessionId) || null;
+        if (this.activeRun) {
+            const context = this.activeRun;
+            // The local run also contains partial output absent from graph history.
+            this.currentChatHistory = history.messages.map(message => ({...message}));
+            this.chatMessages.innerHTML = '';
+            context.element = null;
+            for (const message of this.currentChatHistory) {
+                const element = this.addMessage(message.type, message.content, false, false);
+                if (message.runId === context.snapshot.id) context.element = element;
+            }
+            const saved = this.currentChatHistory.find(message => message.runId === context.snapshot.id);
+            context.historyEntry = saved || null;
+            if (!context.element) context.element = this.addMessage('assistant', '', true, false);
+            this.renderManagedRun(context, context.snapshot);
+        }
+        this.updateUI();
         this.checkAndSetCentered();
         this.renderChatHistory();
     }
@@ -588,6 +614,13 @@ class SuperBizAgentApp {
 
     // 更新UI
     updateUI() {
+        const run = this.activeRun?.snapshot;
+        const running = run && ['running', 'stopping'].includes(run.status);
+        const paused = run?.status === 'paused';
+        if (running) this.isStreaming = true;
+        if (this.agentRunStatus) {
+            this.agentRunStatus.textContent = paused ? '已停止' : (running ? '执行中' : '');
+        }
         // 更新模式选择器显示
         if (this.currentModeText) {
             const modeNames = {
@@ -610,14 +643,36 @@ class SuperBizAgentApp {
         
         // 更新发送按钮状态
         if (this.sendButton) {
-            this.sendButton.disabled = this.isStreaming;
+            const controlled = running || paused;
+            const action = controlled ? (this.activeRun.offline ? 'reconnect' : (paused ? 'resume' : 'stop')) : 'send';
+            const labels = {send: '发送', stop: '停止', resume: '继续', reconnect: '重连'};
+            const icons = {
+                send: '<path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+                stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>',
+                resume: '<path d="M8 5L19 12L8 19V5Z" fill="currentColor"/>',
+                reconnect: '<path d="M20 7V3M20 7H16M20 7A8 8 0 1 0 20 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+            };
+            const stopping = run?.status === 'stopping' && !this.activeRun?.offline;
+            const label = stopping ? '正在停止…' : labels[action];
+            this.sendButton.innerHTML = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">${icons[action]}</svg>`;
+            this.sendButton.title = label;
+            this.sendButton.setAttribute('aria-label', label);
+            this.sendButton.setAttribute('data-action', action);
+            this.sendButton.disabled = this.runControlBusy || stopping || (this.isStreaming && !controlled);
         }
         
         // 更新输入框状态
         if (this.messageInput) {
-            this.messageInput.disabled = this.isStreaming;
+            this.messageInput.disabled = this.isStreaming || paused;
             this.messageInput.placeholder = '问问智能OnCall助手';
         }
+    }
+
+    handleSendButton() {
+        if (['running', 'stopping', 'paused'].includes(this.activeRun?.snapshot.status)) {
+            return this.controlAgentRun();
+        }
+        return this.sendMessage();
     }
 
     // 生成随机会话ID
@@ -627,6 +682,10 @@ class SuperBizAgentApp {
 
     // 发送消息
     async sendMessage() {
+        if (this.activeRun?.snapshot.status === 'paused') {
+            this.showNotification('点击继续完成任务，或新建对话', 'warning');
+            return;
+        }
         let message = '';
         if (this.messageInput) {
             message = this.messageInput.value.trim();
@@ -655,11 +714,7 @@ class SuperBizAgentApp {
         this.updateUI();
 
         try {
-            if (this.currentMode === 'quick') {
-                await this.sendQuickMessage(message);
-            } else if (this.currentMode === 'stream') {
-                await this.sendStreamMessage(message);
-            }
+            await this.startManagedRun(this.currentMode, message);
         } catch (error) {
             console.error('发送消息失败:', error);
             this.addMessage('assistant', '抱歉，发送消息时出现错误：' + error.message);
@@ -672,6 +727,118 @@ class SuperBizAgentApp {
                 this.updateCurrentChatHistory();
                 this.renderChatHistory(); // 更新历史对话列表显示
             }
+        }
+    }
+
+    async runApi(path, options = {}) {
+        const response = await fetch(`${this.apiBaseUrl}/agent/runs${path}`, options);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || `HTTP错误: ${response.status}`);
+        return data;
+    }
+
+    async startManagedRun(mode, question = '') {
+        this.activeRun = null;
+        const snapshot = await this.runApi('', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({session_id: this.sessionId, mode, question})
+        });
+        const context = {
+            snapshot,
+            element: this.addMessage('assistant', mode === 'aiops' ? '正在分析…' : '正在思考…', true, false),
+            historyEntry: null,
+            watching: false
+        };
+        this.activeRun = context;
+        this.sessionRuns.set(this.sessionId, context);
+        this.renderManagedRun(context, snapshot);
+        await this.watchManagedRun(context);
+    }
+
+    renderManagedRun(context, snapshot) {
+        if (snapshot.version < context.snapshot.version) return;
+        context.snapshot = snapshot;
+        if (this.activeRun !== context) return;
+        const paused = snapshot.status === 'paused';
+        const terminal = ['completed', 'failed', 'paused'].includes(snapshot.status);
+        let content = snapshot.answer;
+        if (snapshot.mode === 'aiops') {
+            const steps = snapshot.events.filter(event => !['complete', 'error'].includes(event.type));
+            content = steps.map(event => {
+                if (event.type === 'plan') return `### 执行计划\n${(event.plan || []).map(step => `- ${step}`).join('\n')}`;
+                if (event.type === 'report') return event.report || event.message || '';
+                return event.message || '';
+            }).join('\n\n');
+            if (snapshot.answer && !steps.some(event => event.type === 'report' && event.report === snapshot.answer)) {
+                content += `\n\n${snapshot.answer}`;
+            }
+        } else if (snapshot.mode === 'quick' && !terminal) {
+            content = '';
+        }
+        const savedContent = content;
+        if (snapshot.status === 'failed') content += `\n\n执行失败：${snapshot.error}`;
+        if (paused) content += '\n\n已停止，点击“继续”恢复任务。';
+        if (!content) content = snapshot.mode === 'aiops' ? '正在分析…' : '正在思考…';
+        const element = context.element.querySelector('.message-content');
+        if (element) {
+            element.innerHTML = this.renderMarkdown(content);
+            if (terminal) this.highlightCodeBlocks(element);
+        }
+        context.element.classList.toggle('streaming', !terminal);
+        if (terminal) {
+            if (!context.historyEntry) {
+                context.historyEntry = {type: 'assistant', content: '', timestamp: new Date().toISOString(), runId: snapshot.id};
+                this.currentChatHistory.push(context.historyEntry);
+            }
+            context.historyEntry.content = savedContent || (paused ? '任务已停止' : content);
+            if (this.isCurrentChatFromHistory) this.updateCurrentChatHistory();
+        }
+        this.isStreaming = ['running', 'stopping'].includes(snapshot.status);
+        this.updateUI();
+        this.scrollToBottom();
+    }
+
+    async watchManagedRun(context) {
+        if (context.watching) return;
+        context.watching = true;
+        try {
+            while (['running', 'stopping'].includes(context.snapshot.status)) {
+                const snapshot = await this.runApi(`/${context.snapshot.id}`);
+                context.offline = false;
+                this.renderManagedRun(context, snapshot);
+                if (['running', 'stopping'].includes(context.snapshot.status)) {
+                    await new Promise(resolve => setTimeout(resolve, 250));
+                }
+            }
+        } catch (error) {
+            context.offline = true;
+            this.showNotification(`连接中断：${error.message}。点击“重连”确认后台状态。`, 'warning');
+        } finally {
+            context.watching = false;
+            this.updateUI();
+        }
+    }
+
+    async controlAgentRun() {
+        const context = this.activeRun;
+        if (!context || this.runControlBusy) return;
+        this.runControlBusy = true;
+        this.updateUI();
+        try {
+            const action = context.snapshot.status === 'paused' ? 'resume' : 'stop';
+            const snapshot = context.offline
+                ? await this.runApi(`/${context.snapshot.id}`)
+                : await this.runApi(`/${context.snapshot.id}/${action}`, {method: 'POST'});
+            context.offline = false;
+            this.renderManagedRun(context, snapshot);
+            // Do not await the watcher here: users must be able to stop again.
+            void this.watchManagedRun(context);
+        } catch (error) {
+            this.showNotification(error.message, 'error');
+        } finally {
+            this.runControlBusy = false;
+            this.updateUI();
         }
     }
 
@@ -1591,8 +1758,8 @@ class SuperBizAgentApp {
         // 新建对话
         this.newChat();
         
-        // 添加"分析中..."的消息（带旋转动画）
-        const loadingMessage = this.addLoadingMessage('分析中...');
+        // Agent任务统一管理，支持停止和继续。
+        const loadingMessage = null;
         this.currentAIOpsMessage = loadingMessage; // 保存消息引用用于后续更新
         
         // 设置发送状态
@@ -1600,7 +1767,7 @@ class SuperBizAgentApp {
         this.updateUI();
 
         try {
-            await this.sendAIOpsRequest(loadingMessage);
+            await this.startManagedRun('aiops');
         } catch (error) {
             console.error('智能运维分析失败:', error);
             // 更新消息为错误信息
